@@ -398,26 +398,13 @@ class EnsembleDemucsMDXMusicSeparationModel:
             update_percent_func(int(val))
 
         # Ensemble vocals for MDX and Demucs
-        def calculate_vocals(weights, vocals_m1, vocals_m2, vocals_d):
-            weighted_vocals = (weights[0] * vocals_m1.T + weights[1] * vocals_m2.T + weights[2] * vocals_d.T) / weights.sum()
-            vocals_lowpass = lr_filter(weighted_vocals, 14000, 'lowpass')
-            
-            average_vocals = ((vocals_m2.T + vocals_d.T) / 2)
-            vocals_highpass = lr_filter(average_vocals, 14000, 'highpass')
-    
-            return (vocals_lowpass + vocals_highpass) * 1.004
-
-        def calculate_vocals_onnx(weights, vocals_m1, vocals_d):
-            return (weights[0] * vocals_m1.T + weights[1] * vocals_d.T) / weights.sum()
-
-        # Choose ensemble vocals for MDX and Demucs or use single ONNX
         if self.single_onnx is False:
             weights = np.array([12, 8, 3])
-            vocals = calculate_vocals(weights, vocals_mdxb1, vocals_mdxb2, vocals_demucs)
+            vocals = (lr_filter((weights[0] * vocals_mdxb1.T + weights[1] * vocals_mdxb2.T + weights[2] * vocals_demucs.T) / weights.sum(), 14000, 'lowpass') + lr_filter(((vocals_mdxb2.T + vocals_demucs.T) / 2), 14000, 'highpass')) * 1.004
         else:
             weights = np.array([6, 1])
-            vocals = calculate_vocals_onnx(weights, vocals_mdxb1, vocals_demucs)
-
+            vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_demucs.T) / weights.sum()
+            
         # vocals
         separated_music_arrays['vocals'] = vocals
         output_sample_rates['vocals'] = sample_rate
@@ -691,25 +678,12 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             update_percent_func(int(val))
 
         # Ensemble vocals for MDX and Demucs
-        def calculate_vocals(weights, vocals_m1, vocals_m2, vocals_d):
-            weighted_vocals = (weights[0] * vocals_m1.T + weights[1] * vocals_m2.T + weights[2] * vocals_d.T) / weights.sum()
-            vocals_lowpass = lr_filter(weighted_vocals, 14000, 'lowpass')
-    
-            average_vocals = ((vocals_m2.T + vocals_d.T) / 2)
-            vocals_highpass = lr_filter(average_vocals, 14000, 'highpass')
-    
-            return (vocals_lowpass + vocals_highpass) * 1.004
-
-        def calculate_vocals_onnx(weights, vocals_m1, vocals_d):
-            return (weights[0] * vocals_m1.T + weights[1] * vocals_d.T) / weights.sum()
-
-        # Choose ensemble vocals for MDX and Demucs or use single ONNX
         if self.single_onnx is False:
             weights = np.array([12, 8, 3])
-            vocals = calculate_vocals(weights, vocals_mdxb1, vocals_mdxb2, vocals_demucs)
+            vocals = (lr_filter((weights[0] * vocals_mdxb1.T + weights[1] * vocals_mdxb2.T + weights[2] * vocals_demucs.T) / weights.sum(), 14000, 'lowpass') + lr_filter(((vocals_mdxb2.T + vocals_demucs.T) / 2), 14000, 'highpass')) * 1.004
         else:
             weights = np.array([6, 1])
-            vocals = calculate_vocals_onnx(weights, vocals_mdxb1, vocals_demucs)
+            vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_demucs.T) / weights.sum()
 
         # Generate instrumental
         instrum = (mixed_sound_array - vocals) * 1.002
