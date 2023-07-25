@@ -15,7 +15,6 @@ import torch.nn as nn
 import os
 import argparse
 import soundfile as sf
-
 from demucs.states import load_model
 from demucs import pretrained
 from demucs.apply import apply_model
@@ -23,7 +22,10 @@ import onnxruntime as ort
 from time import time
 import librosa
 import hashlib
-
+from tqdm import tqdm
+from scipy.signal import firwin, lfilter
+from scipy import signal
+import sys
 
 __VERSION__ = '1.0.1'
 
@@ -175,7 +177,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
         """
             options - user options
         """
-        # print(options)
+        print("Using the following options: ", options)
 
         if torch.cuda.is_available():
             device = 'cuda:0'
@@ -285,8 +287,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
             self.chunk_size = chunk_size
             self.mdx_models2 = get_models('tdf_extra', load=False, device=device, vocals_model_type=2)
             root_path = os.path.dirname(os.path.realpath(__file__)) + '/'
-            model_path_onnx2 = model_folder + 'Kim_Inst.onnx'
-            remote_url_onnx2 = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Inst.onnx'
+            model_path_onnx2 = model_folder + 'UVR_MDX_Instr_HQ3.onnx'
+            remote_url_onnx2 = 'https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/UVR-MDX-NET-Inst_HQ_3.onnx'
             if not os.path.isfile(model_path_onnx2):
                 torch.hub.download_url_to_file(remote_url_onnx2, model_path_onnx2)
             print('Model path: {}'.format(model_path_onnx2))
@@ -340,7 +342,8 @@ class EnsembleDemucsMDXMusicSeparationModel:
         overlap_large = self.overlap_large
         overlap_small = self.overlap_small
 
-        # Get Demics vocal only
+        # Get Demucs vocal only
+        print('Processing vocals, step 1...')
         model = self.model_vocals_only
         shifts = 1
         overlap = overlap_large
@@ -350,12 +353,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
             val = 100 * (current_file_number + 0.10) / total_files
             update_percent_func(int(val))
 
+        print('Processing vocals, step 2...')
         vocals_demucs += 0.5 * -apply_model(model, -audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
 
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.20) / total_files
             update_percent_func(int(val))
 
+        print('Processing vocals, step 3...')
         overlap = overlap_large
         sources1 = demix_full(
             mixed_sound_array.T,
@@ -366,11 +371,12 @@ class EnsembleDemucsMDXMusicSeparationModel:
             overlap=overlap
         )[0]
 
-        vocals_mdxb1 = sources1
+        vocals_mdxb1 = sources1 * 1.0074
 
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.30) / total_files
             update_percent_func(int(val))
+        print('Processing vocals, step 4...')
 
         if self.single_onnx is False:
             sources2 = -demix_full(
@@ -384,19 +390,33 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
             # it's instrumental so need to invert
             instrum_mdxb2 = sources2
-            vocals_mdxb2 = mixed_sound_array.T - instrum_mdxb2
+            vocals_mdxb2 = mixed_sound_array.T - (instrum_mdxb2 * 1.022)
 
+        print('Processing vocals: DONE!')
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.40) / total_files
             update_percent_func(int(val))
 
         # Ensemble vocals for MDX and Demucs
+        def calculate_vocals(weights, vocals_m1, vocals_m2, vocals_d):
+            weighted_vocals = (weights[0] * vocals_m1.T + weights[1] * vocals_m2.T + weights[2] * vocals_d.T) / weights.sum()
+            vocals_lowpass = lr_filter(weighted_vocals, 14000, 'lowpass')
+            
+            average_vocals = ((vocals_m2.T + vocals_d.T) / 2)
+            vocals_highpass = lr_filter(average_vocals, 14000, 'highpass')
+    
+            return (vocals_lowpass + vocals_highpass) * 1.004
+
+        def calculate_vocals_onnx(weights, vocals_m1, vocals_d):
+            return (weights[0] * vocals_m1.T + weights[1] * vocals_d.T) / weights.sum()
+
+        # Choose ensemble vocals for MDX and Demucs or use single ONNX
         if self.single_onnx is False:
             weights = np.array([12, 8, 3])
-            vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_mdxb2.T + weights[2] * vocals_demucs.T) / weights.sum()
+            vocals = calculate_vocals(weights, vocals_mdxb1, vocals_mdxb2, vocals_demucs)
         else:
             weights = np.array([6, 1])
-            vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_demucs.T) / weights.sum()
+            vocals = calculate_vocals_onnx(weights, vocals_mdxb1, vocals_demucs)
 
         # vocals
         separated_music_arrays['vocals'] = vocals
@@ -404,13 +424,14 @@ class EnsembleDemucsMDXMusicSeparationModel:
 
         if not only_vocals:
             # Generate instrumental
-            instrum = mixed_sound_array - vocals
+            instrum = (mixed_sound_array - vocals) * 1.002
 
             audio = np.expand_dims(instrum.T, axis=0)
             audio = torch.from_numpy(audio).type('torch.FloatTensor').to(self.device)
 
             all_outs = []
-            for i, model in enumerate(self.models):
+            print('Demucs processing...')
+            for i, model in tqdm(enumerate(self.models), total=4):
                 if i == 0:
                     overlap = overlap_small
                 elif i > 0:
@@ -428,7 +449,7 @@ class EnsembleDemucsMDXMusicSeparationModel:
                     out = out[:4]
 
                 out[0] = self.weights_drums[i] * out[0]
-                out[1] = self.weights_bass[i] * out[1]
+                out[1] = self.weights_bass[i] * out[1] * 1.0045
                 out[2] = self.weights_other[i] * out[2]
                 out[3] = self.weights_vocals[i] * out[3]
 
@@ -477,7 +498,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         """
             options - user options
         """
-        # print(options)
+        print("Using the following options: ", options)
 
         if torch.cuda.is_available():
             device = 'cuda:0'
@@ -571,6 +592,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         overlap_small = self.overlap_small
 
         # Get Demucs vocal only
+        print('Processing vocals, step 1...')
         model_folder = os.path.dirname(os.path.realpath(__file__)) + '/models/'
         remote_url = 'https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/04573f0d-f3cf25b2.th'
         model_path = model_folder + '04573f0d-f3cf25b2.th'
@@ -586,6 +608,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             val = 100 * (current_file_number + 0.10) / total_files
             update_percent_func(int(val))
 
+        print('Processing vocals, step 2...')
         vocals_demucs += 0.5 * -apply_model(model_vocals, -audio, shifts=shifts, overlap=overlap)[0][3].cpu().numpy()
         model_vocals = model_vocals.cpu()
         del model_vocals
@@ -611,6 +634,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             providers=self.providers,
             provider_options=[{"device_id": 0}],
         )
+        print('Processing vocals, step 3...')
         overlap = overlap_large
         sources1 = demix_full(
             mixed_sound_array.T,
@@ -620,13 +644,14 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             infer_session1,
             overlap=overlap
         )[0]
-        vocals_mdxb1 = sources1
+        vocals_mdxb1 = sources1 * 1.0074
         del infer_session1
         del mdx_models1
 
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.30) / total_files
             update_percent_func(int(val))
+        print('Processing vocals, step 4...')
 
         if self.single_onnx is False:
             # MDX-B model 2  initialization
@@ -656,30 +681,45 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
 
             # it's instrumental so need to invert
             instrum_mdxb2 = sources2
-            vocals_mdxb2 = mixed_sound_array.T - instrum_mdxb2
+            vocals_mdxb2 = mixed_sound_array.T - (instrum_mdxb2 * 1.022)
             del infer_session2
             del mdx_models2
 
+        print('Processing vocals: DONE!')
         if update_percent_func is not None:
             val = 100 * (current_file_number + 0.40) / total_files
             update_percent_func(int(val))
 
         # Ensemble vocals for MDX and Demucs
+        def calculate_vocals(weights, vocals_m1, vocals_m2, vocals_d):
+            weighted_vocals = (weights[0] * vocals_m1.T + weights[1] * vocals_m2.T + weights[2] * vocals_d.T) / weights.sum()
+            vocals_lowpass = lr_filter(weighted_vocals, 14000, 'lowpass')
+    
+            average_vocals = ((vocals_m2.T + vocals_d.T) / 2)
+            vocals_highpass = lr_filter(average_vocals, 14000, 'highpass')
+    
+            return (vocals_lowpass + vocals_highpass) * 1.004
+
+        def calculate_vocals_onnx(weights, vocals_m1, vocals_d):
+            return (weights[0] * vocals_m1.T + weights[1] * vocals_d.T) / weights.sum()
+
+        # Choose ensemble vocals for MDX and Demucs or use single ONNX
         if self.single_onnx is False:
             weights = np.array([12, 8, 3])
-            vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_mdxb2.T + weights[2] * vocals_demucs.T) / weights.sum()
+            vocals = calculate_vocals(weights, vocals_mdxb1, vocals_mdxb2, vocals_demucs)
         else:
             weights = np.array([6, 1])
-            vocals = (weights[0] * vocals_mdxb1.T + weights[1] * vocals_demucs.T) / weights.sum()
+            vocals = calculate_vocals_onnx(weights, vocals_mdxb1, vocals_demucs)
 
         # Generate instrumental
-        instrum = mixed_sound_array - vocals
+        instrum = (mixed_sound_array - vocals) * 1.002
 
         audio = np.expand_dims(instrum.T, axis=0)
         audio = torch.from_numpy(audio).type('torch.FloatTensor').to(self.device)
 
         all_outs = []
 
+        print('Demucs processing...')
         i = 0
         overlap = overlap_small
         model = pretrained.get_model('htdemucs_ft')
@@ -692,7 +732,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             update_percent_func(int(val))
 
         out[0] = self.weights_drums[i] * out[0]
-        out[1] = self.weights_bass[i] * out[1]
+        out[1] = self.weights_bass[i] * out[1] * 1.0045
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
@@ -711,7 +751,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             update_percent_func(int(val))
 
         out[0] = self.weights_drums[i] * out[0]
-        out[1] = self.weights_bass[i] * out[1]
+        out[1] = self.weights_bass[i] * out[1] * 1.0045
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
@@ -733,7 +773,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
         out[2] = out[2] + out[4] + out[5]
         out = out[:4]
         out[0] = self.weights_drums[i] * out[0]
-        out[1] = self.weights_bass[i] * out[1]
+        out[1] = self.weights_bass[i] * out[1] * 1.0045
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
@@ -751,7 +791,7 @@ class EnsembleDemucsMDXMusicSeparationModelLowGPU:
             update_percent_func(int(val))
 
         out[0] = self.weights_drums[i] * out[0]
-        out[1] = self.weights_bass[i] * out[1]
+        out[1] = self.weights_bass[i] * out[1] * 1.0045
         out[2] = self.weights_other[i] * out[2]
         out[3] = self.weights_vocals[i] * out[3]
         all_outs.append(out)
@@ -852,14 +892,14 @@ def predict_with_model(options):
             print('File created: {}'.format(output_folder + '/' + output_name))
 
         # instrumental part 1
-        inst = audio.T - result['vocals']
+        inst = (audio.T - result['vocals']) * 1.002
         output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum')
         sf.write(output_folder + '/' + output_name, inst, sr, subtype='FLOAT')
         print('File created: {}'.format(output_folder + '/' + output_name))
 
         if not only_vocals:
             # instrumental part 2
-            inst2 = result['bass'] + result['drums'] + result['other']
+            inst2 = (result['bass'] + result['drums'] + result['other']) * 1.004
             output_name = os.path.splitext(os.path.basename(input_audio))[0] + '_{}.wav'.format('instrum2')
             sf.write(output_folder + '/' + output_name, inst2, sr, subtype='FLOAT')
             print('File created: {}'.format(output_folder + '/' + output_name))
@@ -867,6 +907,25 @@ def predict_with_model(options):
     if update_percent_func is not None:
         val = 100
         update_percent_func(int(val))
+
+
+# lowpass filter
+def lr_filter(audio, cutoff, filter_type, order=4, sr=44100):
+    # Transpose the audio data to match the expected shape for the signal processing library
+    audio = audio.T
+    # The Nyquist frequency is half the sample rate. It's the maximum frequency that can be correctly sampled.
+    nyquist = 0.5 * sr
+    # Normalize the cutoff frequency to the Nyquist frequency
+    normal_cutoff = cutoff / nyquist
+    # Use the butterworth filter from scipy signal processing library to create filter coefficients
+    # The order of the filter divided by 2 is used because this is a second-order (biquad) filter
+    b, a = signal.butter(order//2, normal_cutoff, btype=filter_type, analog=False)
+    # Use filtfilt function to apply the filter to the audio data. 
+    # filtfilt is used instead of lfilter as it applies the filter twice, once forward and once backwards, 
+    # resulting in zero phase distortion.
+    filtered_audio = signal.filtfilt(b, a, audio)
+    # Transpose the filtered audio back to its original shape and return it
+    return filtered_audio.T
 
 
 def md5(fname):
