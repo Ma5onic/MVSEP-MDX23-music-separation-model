@@ -1,3 +1,40 @@
+# MVSep-MDX23 Colab Fork v2.2.2
+Adaptation of MVSep-MDX23 algorithm for Colab, with few tweaks:
+
+**v2.2.2**
+* D1581 demo model replaced by new InstVocHQ MDXv3 model.
+
+**v2.2.1**
+* Added custom weights feature
+* Fixed some bugs
+* Fixed input: you can use a file or a folder as input now
+
+**v2.2**
+* Added MDXv3 compatibility
+* Added MDXv3 demo model D1581 in vocals stem multiband ensemble
+* Added MDX-VOC-FT *Fullband SRS* in vocals stem multiband ensemble
+* Added option to output only vocals/instrum stems (faster processing)
+* Added 16bit output format option
+* Added "BigShift trick" for MDX models
+* Added separated overlap values for MDX, MDXv3 and Demucs
+* Fixed volume compensations fine-tuned
+* Fixed some memory issues
+
+[**v2.1 (by deton24)**](https://github.com/deton24/MVSEP-MDX23-Colab_v2.1)
+* Updated with MDX-VOC-FT instead of Kim Vocal 2
+
+[**v2.0**](https://github.com/jarredou/MVSEP-MDX23-Colab_v2/tree/2.0)
+* Updated with new Kim Vocal 2 & UVR-MDX-Instr-HQ3 models
+* Folder batch processing
+* Fixed high frequency bleed in vocals
+* Fixed volume compensation for MDX models
+
+https://colab.research.google.com/github/jarredou/MVSEP-MDX23-Colab_v2/blob/v2.2/MVSep-MDX23-Colab.ipynb
+
+
+---
+Original work =>
+---
 # MVSEP-MDX23-music-separation-model
 Model for [Sound demixing challenge 2023: Music Demixing Track - MDX'23](https://www.aicrowd.com/challenges/sound-demixing-challenge-2023). Model perform separation of music into 4 stems "bass", "drums", "vocals", "other". Model won 3rd place in challenge (Leaderboard C).
 
@@ -10,22 +47,8 @@ Model based on [Demucs4](https://github.com/facebookresearch/demucs), [MDX](http
 
 With this command audios with names "mixture1.wav" and "mixture2.wav" will be processed and results will be stored in `./results/` folder in WAV format.
 
-### All available keys
-* `--input_audio` - input audio location. You can provide multiple files at once. **Required**
-* `--output_folder` - output audio folder. **Required**
-* `--cpu` - choose CPU instead of GPU for processing. Can be very slow.
-* `--overlap_large` - overlap of splitted audio for light models. Closer to 1.0 - slower, but better quality. Default: 0.6.
-* `--overlap_small` - overlap of splitted audio for heavy models. Closer to 1.0 - slower, but better quality. Default: 0.5.
-* `--single_onnx` - only use single ONNX model for vocals. Can be useful if you have not enough GPU memory.
-* `--chunk_size` - chunk size for ONNX models. Set lower to reduce GPU memory consumption. Default: 1000000.
-* `--large_gpu` - it will store all models on GPU for faster processing of multiple audio files. Requires at least 11 GB of free GPU memory.
-* `--use_kim_model_1` - use first version of Kim model (as it was on contest).
-* `--only_vocals` - only create vocals and instrumental. Skip bass, drums, other. Processing will be faster.
-
-### Notes
-* If you have not enough GPU memory you can use CPU (`--cpu`), but it will be slow. Additionally you can use single ONNX (`--single_onnx`), but it will decrease quality a little bit. Also reduce of chunk size can help (`--chunk_size 200000`).
-* In current revision code requires less GPU memory, but it process multiple files slower. If you want old fast method use argument `--large_gpu`. It will require > 11 GB of GPU memory, but will work faster.
-* There is [Google.Collab version](https://colab.research.google.com/github/jarredou/MVSEP-MDX23-Colab_v2/blob/main/MVSep-MDX23-Colab.ipynb) of this code.  
+* **Note 1**: If you have not enough GPU memory you can use CPU (`--cpu`), but it will be slow. Additionally you can use single ONNX (`--single_onnx`), but it will decrease quality a little bit. Also reduce of chunk size can help (`--chunk_size 200000`).
+* **Note 2**: In current revision code requires less GPU memory, but it process multiple files slower. If you want old fast method use argument `--large_gpu`. It will require > 11 GB of GPU memory, but will work faster.
 
 ## Quality comparison
 
@@ -45,31 +68,10 @@ Quality comparison with best separation models performed on [MultiSong Dataset](
 ![GUI Window](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model/blob/main/images/MVSep-Window.png)
 
 * Script for GUI (based on PyQt5): [gui.py](gui.py).
-* You can download [standalone program for Windows here](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model/releases/download/v1.0.1/MVSep-MDX23_v1.0.1.zip) (~730 MB). Unzip archive and to start program double click `run.bat`. On first run it will download pytorch with CUDA support (~2.8 GB) and some Neural Net models.
+* You can download standalone program for Windows here: [zip1](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model/releases/download/v1.0/MVSep-MDX23.zip.001), [zip2](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model/releases/download/v1.0/MVSep-MDX23.zip.002). Unzip archives and to start program double click `run.bat`.
 * Program will download all needed neural net models from internet at the first run.
 * GUI supports Drag & Drop of multiple files.
 * Progress bar available.
-
-## Web Interface
-executing `web-ui.py` with python will start the web interface locally on `localhost` (127.0.0.1).
-You'll see what port it is running on within the terminal output.
-
-![image](https://github.com/Ma5onic/MVSEP-MDX23-music-separation-model/assets/18509613/ae7130a5-60a4-4095-abbd-5290e84dcf7c)
-
-* Browser-Based user interface
-* Program will download all needed neural net models from internet at the first run.
-* supports Drag & Drop for audio upload (single file)
-
-![Web-UI Window](https://github.com/ZFTurbo/MVSEP-MDX23-music-separation-model/assets/18509613/4872f6aa-5896-44e9-8885-eaee1de3f4ee)
-
-
-## Changes
-
-### v1.0.1
-* Settings in GUI updated, now you can control all possible options
-* Kim vocal model updated from version 1 to version 2, you still can use version 1 using parameter `--use_kim_model_1`
-* Added possibility to generate only vocals/instrumental pair if you don't need bass, drums and other stems. Use parameter `--only_vocals`
-* Standalone program was updated. It has less size now. GUI will download torch/cuda on the first run. 
 
 ## Citation
 
